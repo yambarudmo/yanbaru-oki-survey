@@ -1,0 +1,68 @@
+name: Create Daily CSV from Spreadsheet
+
+# GASからのHTTPリクエスト(repository_dispatch)をトリガーにする
+on:
+  repository_dispatch:
+    types: [spreadsheet-data]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. リポジトリをチェックアウト（コードを読み込む）
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # シークレットに保存したトークンを使用する
+          token: ${{ secrets.GH_TOKEN }}
+
+      # 2. CSVファイルをダウンロード
+      # GASから送られてきた target_folder を使用して保存パスを構築
+      - name: Create Daily CSV
+        run: |
+          # 保存先パスを変数に格納 (例: "data" や "" )
+          TARGET_DIR="${{ github.event.client_payload.target_folder }}"
+          
+          # ファイル名を変数に格納 (例: "20251030.csv")
+          FILENAME="${{ github.event.client_payload.filename }}"
+          
+          # 保存先パスを決定
+          # もし TARGET_DIR が空文字（ルート指定）でなければ、パスの末尾に / を追加
+          if [[ -n "$TARGET_DIR" ]]; then
+            OUTPUT_PATH="${TARGET_DIR}/${FILENAME}"
+            # 保存先フォルダが存在しない場合は作成
+            mkdir -p "$TARGET_DIR"
+          else
+            OUTPUT_PATH="${FILENAME}"
+          fi
+          
+          echo "Saving file to: $OUTPUT_PATH"
+          
+          # GASから送られてきたGoogle DriveのダウンロードURLを使用し、決定したパスに保存
+          curl -L "${{ github.event.client_payload.download_url }}" -o "$OUTPUT_PATH"
+      
+      # 3. 変更内容をコミット＆プッシュ
+      # GASから送られてきた target_folder を使用してコミットパスを構築
+      - name: Commit & Push
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          
+          # 保存先パスを変数に格納
+          TARGET_DIR="${{ github.event.client_payload.target_folder }}"
+          FILENAME="${{ github.event.client_payload.filename }}"
+          
+          # コミット対象のパスを決定
+          if [[ -n "$TARGET_DIR" ]]; then
+            ADD_PATH="${TARGET_DIR}/${FILENAME}"
+          else
+            ADD_PATH="${FILENAME}"
+          fi
+
+          echo "Adding path to git: $ADD_PATH"
+          git add "$ADD_PATH"
+          
+          # 変更があった場合のみコミットを実行する（「変更なし」エラーを回避）
+          git diff --staged --quiet || git commit -m "data update: $ADD_PATH"
+          
+          git push
