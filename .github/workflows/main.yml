@@ -21,22 +21,31 @@ jobs:
         run: |
           # 保存先パスを変数に格納 (例: "data" や "" )
           TARGET_DIR="${{ github.event.client_payload.target_folder }}"
+          FILENAME="${{ github.event.client_payload.filename }}"
           
+          # このステップ内で使うため、ローカルシェル変数にパスを構築する
+          local_save_path=""
+          target_dir_path=""
+
           # フォルダ名が空（ルート）でない場合、ディレクトリを作成
           if [[ -n "$TARGET_DIR" ]]; then
             mkdir -p "$TARGET_DIR"
-            # 保存パスを "folder/file.csv" に設定
-            # GITHUB_ENV に保存し、後続のステップでパスを使えるようにする
-            echo "SAVE_PATH=$TARGET_DIR/${{ github.event.client_payload.filename }}" >> $GITHUB_ENV
-            echo "TARGET_DIR_PATH=$TARGET_DIR" >> $GITHUB_ENV
+            local_save_path="$TARGET_DIR/$FILENAME"
+            target_dir_path="$TARGET_DIR"
           else
-            # 保存パスを "file.csv" (ルート) に設定
-            echo "SAVE_PATH=${{ github.event.client_payload.filename }}" >> $GITHUB_ENV
-            echo "TARGET_DIR_PATH=." >> $GITHUB_ENV # ルートディレクトリ
+            # ルートに保存
+            local_save_path="$FILENAME"
+            target_dir_path="."
           fi
           
-          # $SAVE_PATH にファイルをダウンロード
-          curl -L "${{ github.event.client_payload.download_url }}" -o "${{ env.SAVE_PATH }}"
+          # 後続のステップのために GITHUB_ENV にパスを保存
+          echo "SAVE_PATH=$local_save_path" >> $GITHUB_ENV
+          echo "TARGET_DIR_PATH=$target_dir_path" >> $GITHUB_ENV
+          
+          echo "Saving to: $local_save_path"
+          
+          # ローカルシェル変数 ($local_save_path) を -o オプションに使用
+          curl -L "${{ github.event.client_payload.download_url }}" -o "$local_save_path"
 
       # 3. all.csv に全CSVを結合する
       - name: Combine all CSVs into all.csv
@@ -77,8 +86,6 @@ jobs:
           # 前のステップで設定したパス変数を読み込む
           SAVE_PATH="${{ env.SAVE_PATH }}"
           TARGET_DIR_PATH="${{ env.TARGET_DIR_PATH }}"
-          
-          # all.csvのパスを設定
           ALL_CSV_PATH="$TARGET_DIR_PATH/all.csv"
           
           # 日次ファイルとall.csvの両方をコミット対象に追加
@@ -93,3 +100,4 @@ jobs:
           git diff --staged --quiet || git commit -m "daily data update: ${{ github.event.client_payload.filename }}"
           
           git push
+
