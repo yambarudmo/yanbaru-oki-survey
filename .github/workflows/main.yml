@@ -16,53 +16,80 @@ jobs:
           # シークレットに保存したトークンを使用する
           token: ${{ secrets.GH_TOKEN }}
 
-      # 2. CSVファイルをダウンロード
-      # GASから送られてきた target_folder を使用して保存パスを構築
+      # 2. 保存先パスを準備し、CSVファイルをダウンロード
       - name: Create Daily CSV
         run: |
           # 保存先パスを変数に格納 (例: "data" や "" )
           TARGET_DIR="${{ github.event.client_payload.target_folder }}"
           
-          # ファイル名を変数に格納 (例: "20251030.csv")
-          FILENAME="${{ github.event.client_payload.filename }}"
-          
-          # 保存先パスを決定
-          # もし TARGET_DIR が空文字（ルート指定）でなければ、パスの末尾に / を追加
+          # フォルダ名が空（ルート）でない場合、ディレクトリを作成
           if [[ -n "$TARGET_DIR" ]]; then
-            OUTPUT_PATH="${TARGET_DIR}/${FILENAME}"
-            # 保存先フォルダが存在しない場合は作成
             mkdir -p "$TARGET_DIR"
+            # 保存パスを "folder/file.csv" に設定
+            # GITHUB_ENV に保存し、後続のステップでパスを使えるようにする
+            echo "SAVE_PATH=$TARGET_DIR/${{ github.event.client_payload.filename }}" >> $GITHUB_ENV
+            echo "TARGET_DIR_PATH=$TARGET_DIR" >> $GITHUB_ENV
           else
-            OUTPUT_PATH="${FILENAME}"
+            # 保存パスを "file.csv" (ルート) に設定
+            echo "SAVE_PATH=${{ github.event.client_payload.filename }}" >> $GITHUB_ENV
+            echo "TARGET_DIR_PATH=." >> $GITHUB_ENV # ルートディレクトリ
           fi
           
-          echo "Saving file to: $OUTPUT_PATH"
+          # $SAVE_PATH にファイルをダウンロード
+          curl -L "${{ github.event.client_payload.download_url }}" -o "${{ env.SAVE_PATH }}"
+
+      # 3. all.csv に全CSVを結合する
+      - name: Combine all CSVs into all.csv
+        run: |
+          # 前のステップで設定したパス変数を読み込む
+          TARGET_DIR="${{ env.TARGET_DIR_PATH }}"
           
-          # GASから送られてきたGoogle DriveのダウンロードURLを使用し、決定したパスに保存
-          curl -L "${{ github.event.client_payload.download_url }}" -o "$OUTPUT_PATH"
-      
-      # 3. 変更内容をコミット＆プッシュ
-      # GASから送られてきた target_folder を使用してコミットパスを構築
+          # 結合後のall.csvのパスを設定
+          ALL_CSV_PATH="$TARGET_DIR/all.csv"
+          
+          # 検索対象のパスを設定
+          if [[ "$TARGET_DIR" == "." ]]; then
+            CSV_FILES_PATH="*.csv"
+          else
+            CSV_FILES_PATH="$TARGET_DIR/*.csv"
+          fi
+
+          echo "Combining CSVs into $ALL_CSV_PATH"
+          echo "Searching in $CSV_FILES_PATH"
+          
+          # find: all.csv自身が処理対象に含まれないようにする
+          find "$TARGET_DIR" -maxdepth 1 -type f -name "*.csv" -not -name "all.csv" -print0 | sort -z | \
+            xargs -0 awk 'FNR > 1 || NR == 1' > "$ALL_CSV_PATH"
+          
+          # 結合結果が空でないか確認
+          if [ ! -s "$ALL_CSV_PATH" ]; then
+            echo "Warning: all.csv is empty or not created. Skipping commit of all.csv."
+            # all.csvが空の場合は、コミット対象から外す
+            rm -f "$ALL_CSV_PATH"
+          fi
+
+      # 4. 変更内容をコミット＆プッシュ
       - name: Commit & Push
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           
-          # 保存先パスを変数に格納
-          TARGET_DIR="${{ github.event.client_payload.target_folder }}"
-          FILENAME="${{ github.event.client_payload.filename }}"
+          # 前のステップで設定したパス変数を読み込む
+          SAVE_PATH="${{ env.SAVE_PATH }}"
+          TARGET_DIR_PATH="${{ env.TARGET_DIR_PATH }}"
           
-          # コミット対象のパスを決定
-          if [[ -n "$TARGET_DIR" ]]; then
-            ADD_PATH="${TARGET_DIR}/${FILENAME}"
-          else
-            ADD_PATH="${FILENAME}"
+          # all.csvのパスを設定
+          ALL_CSV_PATH="$TARGET_DIR_PATH/all.csv"
+          
+          # 日次ファイルとall.csvの両方をコミット対象に追加
+          git add "$SAVE_PATH"
+          
+          # all.csv が存在する場合のみコミット対象に追加
+          if [ -f "$ALL_CSV_PATH" ]; then
+            git add "$ALL_CSV_PATH"
           fi
-
-          echo "Adding path to git: $ADD_PATH"
-          git add "$ADD_PATH"
           
-          # 変更があった場合のみコミットを実行する（「変更なし」エラーを回避）
-          git diff --staged --quiet || git commit -m "data update: $ADD_PATH"
+          # 変更があった場合のみコミットを実行
+          git diff --staged --quiet || git commit -m "daily data update: ${{ github.event.client_payload.filename }}"
           
           git push
